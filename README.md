@@ -1,0 +1,2 @@
+# Bengaluru-Transit-Data-Pipeline-with-Self-Healing-ETL
+The Bengaluru Transit Data Pipeline is a Python-based data engineering project that simulates, processes, stores, and analyzes public transportation data for buses and metro services in Bengaluru. It demonstrates an end-to-end ETL (Extract, Transform, Load) workflow, including data processing, database management, analytics, pipeline reliability.
