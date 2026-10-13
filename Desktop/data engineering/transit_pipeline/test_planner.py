@@ -128,5 +128,20 @@ class TestJourneyPlanner(unittest.TestCase):
         self.assertGreater(plans[0].walk_to_first_stop_meters, 0)
 
 
+    def test_find_nearest_bus_stations(self):
+        """Verify calculation of nearest bus station and all nearest bus stations from coordinates."""
+        # Koramangala coordinates
+        lat, lon = 12.9352, 77.6245
+        nearby_buses = planner.find_nearest_bus_stations(lat, lon, top_k=6)
+        self.assertGreaterEqual(len(nearby_buses), 4)
+        closest_bus = nearby_buses[0]
+        self.assertEqual(closest_bus["name"], "Koramangala Sony World")
+        self.assertLessEqual(closest_bus["distance_meters"], 150)
+        self.assertIn("201-G", closest_bus["bus_numbers"])
+        # Distances must be non-decreasing
+        for i in range(len(nearby_buses) - 1):
+            self.assertLessEqual(nearby_buses[i]["distance_meters"], nearby_buses[i + 1]["distance_meters"])
+
+
 if __name__ == "__main__":
     unittest.main()

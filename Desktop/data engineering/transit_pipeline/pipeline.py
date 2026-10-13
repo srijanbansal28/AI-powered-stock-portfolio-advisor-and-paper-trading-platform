@@ -23,6 +23,7 @@ import database as db
 from simulator import TransitSimulator
 from processor import build_snapshot
 from etl import ETLPipeline
+from validation import MovementValidator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +48,7 @@ class TransitPipeline:
         self._snapshot_counter   = 0
         self._ticks_per_snapshot = max(1, int(ANALYTICS_SNAPSHOT_INTERVAL / SIMULATION_TICK_SECONDS))
         self._etl                = ETLPipeline(max_retries=3, retry_wait=0.5)
+        self._validator          = MovementValidator()
 
     def start(self, blocking: bool = True) -> None:
         """Start the pipeline. If blocking=False, runs in background thread."""
@@ -87,6 +89,21 @@ class TransitPipeline:
                     etl_stats["records_in"], etl_stats["records_out"],
                     etl_stats["records_rejected"], etl_stats["retries"],
                 )
+
+                # Vehicle movement validation
+                dt = SIMULATION_TICK_SECONDS * self.time_acceleration
+                val_warnings = self._validator.validate_tick(
+                    result["vehicles"], result["trips"],
+                    result["events"], dt,
+                )
+                if val_warnings:
+                    errors = [w for w in val_warnings if w.severity == "error"]
+                    if errors:
+                        logger.warning(
+                            "[validation] %d error(s) in tick: %s",
+                            len(errors),
+                            "; ".join(w.message for w in errors[:3]),
+                        )
 
                 self._snapshot_counter += 1
                 if self._snapshot_counter >= self._ticks_per_snapshot:

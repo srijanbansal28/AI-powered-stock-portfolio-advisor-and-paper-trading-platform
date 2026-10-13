@@ -141,6 +141,55 @@ def find_nearby_transit_stops(lat: float, lon: float, top_k: int = 5) -> List[Di
     return results[:top_k]
 
 
+def find_nearest_bus_stations(lat: float, lon: float, top_k: int = 10) -> List[Dict[str, any]]:
+    """
+    Find nearest bus stations/stops to given coordinates with detailed distance,
+    walk duration, bus numbers, and route details.
+    The first element is the closest bus station.
+    """
+    bus_stops_map: Dict[str, Dict[str, any]] = {}
+    for r in ROUTES:
+        if r.vehicle_type == "bus":
+            for s in r.stops:
+                if s.name not in bus_stops_map:
+                    bus_stops_map[s.name] = {
+                        "name": s.name,
+                        "stop_id": s.stop_id,
+                        "lat": s.lat,
+                        "lon": s.lon,
+                        "routes": [],
+                        "route_names": [],
+                        "bus_numbers": [],
+                    }
+                if r.route_id not in bus_stops_map[s.name]["routes"]:
+                    bus_stops_map[s.name]["routes"].append(r.route_id)
+                    bus_stops_map[s.name]["route_names"].append(r.display_name or r.name)
+                    bus_num = r.bus_number or r.route_id
+                    if bus_num not in bus_stops_map[s.name]["bus_numbers"]:
+                        bus_stops_map[s.name]["bus_numbers"].append(bus_num)
+
+    results = []
+    for s_name, data in bus_stops_map.items():
+        dist_km = haversine(lat, lon, data["lat"], data["lon"])
+        dist_m = round(dist_km * 1000.0)
+        walk_mins = max(1.0, round(dist_m / 75.0, 1))
+        results.append({
+            "name": data["name"],
+            "stop_id": data["stop_id"],
+            "lat": data["lat"],
+            "lon": data["lon"],
+            "distance_meters": dist_m,
+            "distance_km": round(dist_km, 2),
+            "walk_minutes": walk_mins,
+            "routes": sorted(list(data["routes"])),
+            "route_names": data["route_names"],
+            "bus_numbers": sorted(list(data["bus_numbers"])),
+        })
+
+    results.sort(key=lambda x: x["distance_meters"])
+    return results[:top_k]
+
+
 def get_all_places() -> List[Dict[str, any]]:
     """
     Return all unique transit locations in Bengaluru with metadata

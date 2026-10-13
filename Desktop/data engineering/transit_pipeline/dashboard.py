@@ -13,13 +13,18 @@ import os
 import time
 import json
 import threading
-from datetime import datetime
+import textwrap
+from datetime import datetime, timedelta
 
 # Ensure the transit_pipeline directory is on the path
 sys.path.insert(0, os.path.dirname(__file__))
 
 import streamlit as st
 import streamlit.components.v1 as components
+try:
+    from streamlit_js_eval import get_geolocation
+except Exception:
+    get_geolocation = None
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -100,7 +105,13 @@ pipeline = start_pipeline()
 import analytics as ana
 import database as db
 import etl
+import importlib
 import planner
+if not hasattr(planner, "find_nearest_bus_stations"):
+    try:
+        importlib.reload(planner)
+    except Exception:
+        pass
 from config import ROUTES, ROUTE_BY_ID, PEAK_HOURS
 from processor import classify_delay, format_delay, get_peak_label, build_departure_board
 
@@ -613,16 +624,51 @@ with tabs[3]:
             "🚇" if _sel_metro and not _sel_bus else "🔁"
         )
 
-        st.markdown(f"""
+        _routes_serve_txt = (
+            f"{len(_sel_routes)} route serves this stop"
+            if len(_sel_routes) == 1
+            else f"{len(_sel_routes)} routes serve this stop"
+        )
+
+        _stat_cards = []
+        if len(_sel_bus) > 0:
+            _bus_word = "Bus route" if len(_sel_bus) == 1 else "Bus routes"
+            _stat_cards.append(
+                f'<div style="background:rgba(74,158,255,0.1); border:1px solid rgba(74,158,255,0.3); '
+                f'border-radius:10px; padding:8px 16px; text-align:center; min-width:85px;">'
+                f'<div style="font-size:1.6rem; font-weight:800; color:#4a9eff; line-height:1.1;">{len(_sel_bus)}</div>'
+                f'<div style="font-size:0.72rem; color:#8892b0; font-weight:600; margin-top:2px;">🚌 {_bus_word}</div>'
+                f'</div>'
+            )
+        if len(_sel_metro) > 0:
+            _metro_word = "Metro line" if len(_sel_metro) == 1 else "Metro lines"
+            _stat_cards.append(
+                f'<div style="background:rgba(131,56,236,0.12); border:1px solid rgba(131,56,236,0.35); '
+                f'border-radius:10px; padding:8px 16px; text-align:center; min-width:85px;">'
+                f'<div style="font-size:1.6rem; font-weight:800; color:#a78bfa; line-height:1.1;">{len(_sel_metro)}</div>'
+                f'<div style="font-size:0.72rem; color:#8892b0; font-weight:600; margin-top:2px;">🚇 {_metro_word}</div>'
+                f'</div>'
+            )
+        if not _stat_cards:
+            _stat_cards.append(
+                f'<div style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); '
+                f'border-radius:10px; padding:8px 16px; text-align:center;">'
+                f'<div style="font-size:1.6rem; font-weight:800; color:#8892b0; line-height:1.1;">0</div>'
+                f'<div style="font-size:0.72rem; color:#8892b0;">Routes</div>'
+                f'</div>'
+            )
+        _stats_html = "".join(_stat_cards)
+
+        station_header_html = textwrap.dedent(f"""
         <div style="background:linear-gradient(135deg,#1a1f2e,#22293b);
-                    border-radius:14px; padding:20px 24px; margin:12px 0;
+                    border-radius:14px; padding:18px 22px; margin:12px 0;
                     border:1px solid #2d3247;">
-            <div style="display:flex; align-items:flex-start; justify-content:space-between;">
+            <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
                 <div>
                     <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
                         <span style="font-size:2rem">{_type_icon}</span>
                         <div>
-                            <div style="font-size:1.4rem; font-weight:700; color:#e2e8f0;">
+                            <div style="font-size:1.35rem; font-weight:700; color:#e2e8f0;">
                                 {_sel_stop.name}
                             </div>
                             <div style="color:#8892b0; font-size:0.82rem; margin-top:2px;">
@@ -643,22 +689,16 @@ with tabs[3]:
                         {_ic_badge}
                         <span style="background:rgba(255,255,255,0.06); color:#8892b0;
                                      font-size:0.75rem; padding:3px 10px; border-radius:12px;">
-                            {len(_sel_routes)} route{'s' if len(_sel_routes)!=1 else ''} serve this stop
+                            {_routes_serve_txt}
                         </span>
                     </div>
                 </div>
-                <div style="text-align:right;">
-                    <div style="font-size:2.2rem; font-weight:700; color:#4a9eff;">
-                        {len(_sel_bus)}
-                    </div>
-                    <div style="font-size:0.72rem; color:#8892b0;">🚌 Bus routes</div>
-                    <div style="font-size:2.2rem; font-weight:700; color:#8338EC; margin-top:6px;">
-                        {len(_sel_metro)}
-                    </div>
-                    <div style="font-size:0.72rem; color:#8892b0;">🚇 Metro lines</div>
+                <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                    {_stats_html}
                 </div>
             </div>
-        </div>""", unsafe_allow_html=True)
+        </div>""").strip()
+        st.markdown(station_header_html, unsafe_allow_html=True)
 
         # ── Two column layout: routes + map ────────────────────────────────
         _col_routes, _col_map = st.columns([3, 2])
@@ -892,7 +932,7 @@ with tabs[3]:
 # Journey Planner Component
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_journey_map(plan: planner.JourneyPlan):
+def _render_journey_map(plan: planner.JourneyPlan, key: str = None):
     """Render interactive Plotly route map for a planned journey."""
     fig_map = go.Figure()
     all_lats, all_lons = [], []
@@ -926,7 +966,7 @@ def _render_journey_map(plan: planner.JourneyPlan):
             lat=[u_lat, first_s.lat],
             lon=[u_lon, first_s.lon],
             mode="lines+markers",
-            line=dict(width=3, color="#00d2be", dash="dot"),
+            line=dict(width=3, color="#00d2be"),
             marker=dict(size=12, color="#00d2be"),
             name="🚶 Walk to Station",
             hovertext=[f"📍 Your Location ({plan.user_location_name})", f"🟢 Boarding Station: {first_s.name}"],
@@ -1011,342 +1051,120 @@ def _render_journey_map(plan: planner.JourneyPlan):
             x=0,
         ),
     )
-    st.plotly_chart(fig_map, use_container_width=True)
+    st.plotly_chart(fig_map, use_container_width=True, key=key)
+
+
+def _get_nearest_bus_stations_fallback(lat: float, lon: float, top_k: int = 8):
+    """Fallback helper to find nearest bus stations if module caching delayed reload."""
+    if hasattr(planner, "find_nearest_bus_stations"):
+        return planner.find_nearest_bus_stations(lat, lon, top_k=top_k)
+    bus_stops_map = {}
+    for r in ROUTES:
+        if r.vehicle_type == "bus":
+            for s in r.stops:
+                if s.name not in bus_stops_map:
+                    bus_stops_map[s.name] = {
+                        "name": s.name,
+                        "stop_id": s.stop_id,
+                        "lat": s.lat,
+                        "lon": s.lon,
+                        "bus_numbers": [],
+                    }
+                bus_num = r.bus_number or r.route_id
+                if bus_num not in bus_stops_map[s.name]["bus_numbers"]:
+                    bus_stops_map[s.name]["bus_numbers"].append(bus_num)
+
+    results = []
+    for s_name, data in bus_stops_map.items():
+        dist_km = planner.haversine(lat, lon, data["lat"], data["lon"])
+        dist_m = round(dist_km * 1000.0)
+        walk_mins = max(1.0, round(dist_m / 75.0, 1))
+        results.append({
+            "name": data["name"],
+            "stop_id": data["stop_id"],
+            "lat": data["lat"],
+            "lon": data["lon"],
+            "distance_meters": dist_m,
+            "distance_km": round(dist_km, 2),
+            "walk_minutes": walk_mins,
+            "bus_numbers": sorted(list(data["bus_numbers"])),
+        })
+    results.sort(key=lambda x: x["distance_meters"])
+    return results[:top_k]
 
 
 def render_journey_planner_tab(pipeline):
-    """Renders the comprehensive multi-modal Journey Planner tab."""
-    st.markdown('<div class="section-header">🧭 Bengaluru Multi-Modal Journey Planner</div>', unsafe_allow_html=True)
-    st.caption(
-        "Enter your origin and destination to find the best way across Bengaluru. "
-        "Calculates live ETAs, compares Bus and Metro options, identifies transfer points, and estimates fares and CO₂ savings."
-    )
+    """Renders a clean, user-friendly Journey Planner: source → destination → top 3 options."""
+    st.markdown('<div class="section-header">🧭 Journey Planner</div>', unsafe_allow_html=True)
+    st.caption("Find the best way to travel across Bengaluru — select your source and destination.")
 
     all_places = planner.get_all_places()
     place_names = [p["name"] for p in all_places]
 
-    # Initialize session state for origin & destination
     DEFAULT_ORIGIN = "Kempegowda Bus Station (Majestic)"
-    DEFAULT_DEST = "ITPL / Whitefield"
+    DEFAULT_DEST   = "ITPL / Whitefield"
 
-    if "sb_origin" not in st.session_state:
-        st.session_state["sb_origin"] = DEFAULT_ORIGIN
-    if "sb_dest" not in st.session_state:
-        st.session_state["sb_dest"] = DEFAULT_DEST
-    if "planner_searched" not in st.session_state:
-        st.session_state["planner_searched"] = True
+    if "jp_origin" not in st.session_state:
+        st.session_state["jp_origin"] = DEFAULT_ORIGIN
+    if "jp_dest" not in st.session_state:
+        st.session_state["jp_dest"] = DEFAULT_DEST
 
-    # 1. Process Browser Geolocation query parameters if present
-    qp = st.query_params
-    if "user_lat" in qp and "user_lon" in qp:
-        try:
-            st.session_state["browser_lat"] = float(qp.get("user_lat"))
-            st.session_state["browser_lon"] = float(qp.get("user_lon"))
-            if "geo_acc" in qp:
-                st.session_state["browser_acc"] = float(qp.get("geo_acc"))
-            st.session_state["use_curr_loc"] = True
-        except (ValueError, TypeError):
-            pass
+    # ─────────────────────────────────────────────────────────────────────────
+    # SOURCE → DESTINATION  (simple two-dropdown row with swap button)
+    # ─────────────────────────────────────────────────────────────────────────
+    col_from, col_swap, col_to = st.columns([5, 1, 5])
 
-    # State update callbacks for instant, reactive widget syncing
-    def _swap_places():
-        cur_o = st.session_state.get("sb_origin", DEFAULT_ORIGIN)
-        cur_d = st.session_state.get("sb_dest", DEFAULT_DEST)
-        st.session_state["sb_origin"] = cur_d
-        st.session_state["sb_dest"] = cur_o
-        st.session_state["planner_searched"] = True
-
-    # Location Mode: Specific Boarding Station OR Use My Current Location
-    col_tgl_loc, col_sc_hdr = st.columns([3, 3])
-    with col_tgl_loc:
-        use_current_location = st.toggle(
-            "📍 Use My Current Location (Browser GPS / Locality)",
-            value=st.session_state.get("use_curr_loc", False),
-            key="toggle_user_curr_loc",
-            help="Acquire real-time GPS coordinates via Browser Geolocation API or choose your Bengaluru area.",
+    with col_from:
+        origin_cur = st.session_state.get("jp_origin", DEFAULT_ORIGIN)
+        o_idx = place_names.index(origin_cur) if origin_cur in place_names else 0
+        origin_sel = st.selectbox(
+            "📍 From (Source)",
+            place_names,
+            index=o_idx,
+            key="jp_origin",
         )
 
-    user_coords = None
-    user_location_label = ""
-
-    # Inputs layout
-    if use_current_location:
-        # ─────────────────────────────────────────────────────────────────────
-        # 1. BROWSER GEOLOCATION API (WITH USER PERMISSION)
-        # ─────────────────────────────────────────────────────────────────────
-        geo_html = """
-        <div style="background: linear-gradient(135deg, #0e1e2d, #14283f); border: 1.5px solid #00d2be; border-radius: 10px; padding: 12px 18px; margin-bottom: 8px; color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
-                <div>
-                    <div style="font-weight: 700; font-size: 14px; color: #00d2be; display: flex; align-items: center; gap: 6px;">
-                        <span>🌐 HTML5 Browser Geolocation API</span>
-                    </div>
-                    <div style="font-size: 12px; color: #94a3b8; margin-top: 2px;">
-                        Click below to request browser permission and detect your live device coordinates.
-                    </div>
-                </div>
-                <button id="detect-gps-btn" onclick="requestBrowserGPS()" style="background: linear-gradient(135deg, #00d2be, #00b4d8); color: #0b131e; border: none; padding: 9px 18px; border-radius: 6px; font-weight: 800; font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: 0.2s; box-shadow: 0 2px 8px rgba(0,210,190,0.3);">
-                    <span>📍 Detect My Exact Location</span>
-                </button>
-            </div>
-            <div id="gps-status" style="display: none; margin-top: 10px; padding: 8px 12px; border-radius: 6px; font-size: 12px;"></div>
-        </div>
-        <script>
-        function requestBrowserGPS() {
-            const btn = document.getElementById("detect-gps-btn");
-            const status = document.getElementById("gps-status");
-            btn.disabled = true;
-            btn.style.opacity = "0.7";
-            status.style.display = "block";
-            status.style.background = "#1b2a3c";
-            status.style.color = "#00d2be";
-            status.innerHTML = "⏳ Requesting permission from browser... Please click 'Allow' on the prompt.";
-
-            if (!navigator.geolocation) {
-                status.style.background = "#450a0a";
-                status.style.color = "#fca5a5";
-                status.innerHTML = "❌ Browser Geolocation API is not supported by your browser.";
-                btn.disabled = false;
-                btn.style.opacity = "1";
-                return;
-            }
-
-            navigator.geolocation.getCurrentPosition(
-                function(pos) {
-                    const lat = pos.coords.latitude;
-                    const lon = pos.coords.longitude;
-                    const acc = Math.round(pos.coords.accuracy || 0);
-                    status.style.background = "#064e3b";
-                    status.style.color = "#6ee7b7";
-                    status.innerHTML = "✅ GPS Acquired: " + lat.toFixed(5) + "° N, " + lon.toFixed(5) + "° E (±" + acc + "m accuracy). Updating journey planner...";
-                    try {
-                        const url = new URL(window.parent.location.href);
-                        url.searchParams.set("user_lat", lat.toFixed(5));
-                        url.searchParams.set("user_lon", lon.toFixed(5));
-                        url.searchParams.set("geo_acc", acc.toString());
-                        url.searchParams.set("geo_ts", Date.now().toString());
-                        window.parent.location.href = url.href;
-                    } catch(e) {
-                        console.error("Failed to update parent URL:", e);
-                    }
-                },
-                function(err) {
-                    btn.disabled = false;
-                    btn.style.opacity = "1";
-                    status.style.background = "#450a0a";
-                    status.style.color = "#fca5a5";
-                    if (err.code === 1) {
-                        status.innerHTML = "⚠️ Permission denied: Please allow location access in your browser or select an area below.";
-                    } else if (err.code === 2) {
-                        status.innerHTML = "⚠️ Location unavailable. Please select your Bengaluru area below.";
-                    } else if (err.code === 3) {
-                        status.innerHTML = "⚠️ Location request timed out. Please try again.";
-                    } else {
-                        status.innerHTML = "⚠️ Error: " + err.message;
-                    }
-                },
-                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-            );
-        }
-        </script>
-        """
-        components.html(geo_html, height=95)
-
-        # Coordinate resolution: Browser GPS first, fallback to Locality / Manual
-        if "browser_lat" in st.session_state and "browser_lon" in st.session_state:
-            b_lat = st.session_state["browser_lat"]
-            b_lon = st.session_state["browser_lon"]
-            b_acc = st.session_state.get("browser_acc", 0.0)
-            user_coords = (b_lat, b_lon)
-            user_location_label = f"Device GPS ({b_lat:.4f}° N, {b_lon:.4f}° E)"
-
-            col_gps_info, col_gps_reset = st.columns([5, 1])
-            with col_gps_info:
-                st.success(f"🟢 **Live Browser GPS Connected:** `{b_lat:.5f}° N, {b_lon:.5f}° E` (Accuracy: ±{b_acc:.0f}m)")
-            with col_gps_reset:
-                if st.button("🔄 Reset GPS", key="btn_clear_gps", help="Clear GPS and choose manually"):
-                    st.session_state.pop("browser_lat", None)
-                    st.session_state.pop("browser_lon", None)
-                    st.session_state.pop("browser_acc", None)
-                    try:
-                        st.query_params.clear()
-                    except Exception:
-                        pass
-                    st.rerun()
-        else:
-            curr_loc_list = list(planner.BENGALURU_LOCALITIES.keys())
-            col_loc_choice, col_loc_custom = st.columns([3, 2])
-            with col_loc_choice:
-                selected_loc_name = st.selectbox(
-                    "📍 Select Your Bengaluru Locality (Fallback)",
-                    curr_loc_list,
-                    key="sb_user_curr_area",
-                    help="Select your approximate location in Bengaluru if browser location permission was not granted.",
-                )
-                user_coords = planner.BENGALURU_LOCALITIES.get(selected_loc_name, (12.9716, 77.5946))
-                user_location_label = selected_loc_name
-            with col_loc_custom:
-                with st.expander("🛠️ Enter Custom Coordinates (Lat, Lon)"):
-                    c_lat = st.number_input("Latitude", value=user_coords[0], format="%.5f", key="in_custom_lat")
-                    c_lon = st.number_input("Longitude", value=user_coords[1], format="%.5f", key="in_custom_lon")
-                    user_coords = (c_lat, c_lon)
-                    user_location_label = f"Custom Coords ({c_lat:.4f}, {c_lon:.4f})"
-
-        # ─────────────────────────────────────────────────────────────────────
-        # 2. FIND NEARBY TRANSIT STOPS (CALCULATE DISTANCE TO AVAILABLE STOPS)
-        # ─────────────────────────────────────────────────────────────────────
-        nearby_stops = planner.find_nearby_transit_stops(user_coords[0], user_coords[1], top_k=5)
-        stop_labels = []
-        for s_info in nearby_stops:
-            m_str = " ".join(["🚇 Metro" if m == "metro" else "🚌 Bus" for m in s_info["modes"]])
-            routes_preview = f"({', '.join(s_info['routes'][:3])}{'...' if len(s_info['routes']) > 3 else ''})"
-            stop_labels.append(f"{s_info['name']} — 🚶 {s_info['distance_meters']}m (~{s_info['walk_minutes']:.0f}m walk) • {m_str} {routes_preview}")
-
-        col_nearby, col_dest = st.columns([1, 1])
-        with col_nearby:
-            st.markdown("##### 🚏 Step 2: Nearby Transit Stops (Walking Distance)")
-            chosen_stop_idx = st.selectbox(
-                "Select Boarding Station from Nearby Stops:",
-                range(len(nearby_stops)),
-                format_func=lambda i: stop_labels[i],
-                key="sb_nearby_boarding_stop",
-                help="Stops sorted by closest walking distance from your coordinates. Closest stop is pre-selected."
-            )
-            origin_sel = nearby_stops[chosen_stop_idx]["name"]
-            st.caption(
-                f"🚶 Boarding at **{origin_sel}**: "
-                f"**{nearby_stops[chosen_stop_idx]['distance_meters']} meters** away (~{nearby_stops[chosen_stop_idx]['walk_minutes']:.0f} min walk)"
-            )
-
-        # ─────────────────────────────────────────────────────────────────────
-        # 3. SELECT DESTINATION
-        # ─────────────────────────────────────────────────────────────────────
-        with col_dest:
-            st.markdown("##### 🏁 Step 3: Choose Destination")
-            cur_d = st.session_state.get("sb_dest", DEFAULT_DEST)
-            d_idx = place_names.index(cur_d) if cur_d in place_names else min(1, len(place_names) - 1)
-            dest_sel = st.selectbox(
-                "Destination Transit Stop / Area",
-                place_names,
-                index=d_idx,
-                key="sb_dest",
-            )
-            q_cols = st.columns(4)
-            with q_cols[0]:
-                if st.button("ITPL", key="q_itpl", use_container_width=True):
-                    st.session_state["sb_dest"] = "ITPL / Whitefield"
-                    st.session_state["planner_searched"] = True
-                    st.rerun()
-            with q_cols[1]:
-                if st.button("MG Road", key="q_mg", use_container_width=True):
-                    st.session_state["sb_dest"] = "MG Road"
-                    st.session_state["planner_searched"] = True
-                    st.rerun()
-            with q_cols[2]:
-                if st.button("Electronic City", key="q_ecity", use_container_width=True):
-                    st.session_state["sb_dest"] = "Electronic City"
-                    st.session_state["planner_searched"] = True
-                    st.rerun()
-            with q_cols[3]:
-                if st.button("Airport (KIA)", key="q_kia", use_container_width=True):
-                    st.session_state["sb_dest"] = "Kempegowda International Airport (KIA)"
-                    st.session_state["planner_searched"] = True
-                    st.rerun()
-
-    else:
-        # Station to Station selection
-        user_coords = None
-        col_orig, col_swap, col_dest = st.columns([5, 1, 5])
-
-        with col_orig:
-            cur_o = st.session_state.get("sb_origin", DEFAULT_ORIGIN)
-            o_idx = place_names.index(cur_o) if cur_o in place_names else 0
-            origin_sel = st.selectbox(
-                "🟢 Origin / Boarding Point",
-                place_names,
-                index=o_idx,
-                key="sb_origin",
-            )
-
-        with col_swap:
-            st.write("")
-            st.write("")
-            st.button(
-                "⇄ Swap",
-                key="btn_swap_places",
-                help="Swap Origin and Destination boarding stations",
-                use_container_width=True,
-                on_click=_swap_places,
-            )
-
-        with col_dest:
-            cur_d = st.session_state.get("sb_dest", DEFAULT_DEST)
-            d_idx = place_names.index(cur_d) if cur_d in place_names else min(1, len(place_names) - 1)
-            dest_sel = st.selectbox(
-                "🏁 Destination Place",
-                place_names,
-                index=d_idx,
-                key="sb_dest",
-            )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # 4. GENERATE JOURNEY OPTIONS (SEARCH & FILTERS)
-    # ─────────────────────────────────────────────────────────────────────────
-    col_search_btn, col_sort_by, col_pref = st.columns([3, 3, 2])
-
-    with col_search_btn:
+    with col_swap:
+        st.write("")  # vertical spacer to align with dropdowns
         st.write("")
-        if st.button("🔍 Find Best Routes (Search)", type="primary", use_container_width=True, key="btn_execute_search"):
-            st.session_state["planner_searched"] = True
+        if st.button("🔄", key="btn_swap_jp", use_container_width=True, help="Swap source and destination"):
+            old_origin = st.session_state.get("jp_origin", DEFAULT_ORIGIN)
+            old_dest   = st.session_state.get("jp_dest", DEFAULT_DEST)
+            st.session_state["jp_origin"] = old_dest
+            st.session_state["jp_dest"]   = old_origin
+            st.rerun()
 
-    with col_sort_by:
-        sort_by_choice = st.selectbox(
-            "⚡ Sort Options By",
-            [
-                "⚡ Less Time to Destination (Fastest First)",
-                "🕒 Earliest Destination Arrival Time",
-                "🚏 Fewest Transfers",
-                "💰 Lowest Fare",
-            ],
-            key="sb_sort_order",
-            help="Default ranks routes by the least total minutes required to reach your destination.",
+    with col_to:
+        dest_cur = st.session_state.get("jp_dest", DEFAULT_DEST)
+        d_idx = place_names.index(dest_cur) if dest_cur in place_names else min(1, len(place_names) - 1)
+        dest_sel = st.selectbox(
+            "🏁 To (Destination)",
+            place_names,
+            index=d_idx,
+            key="jp_dest",
         )
 
-    with col_pref:
-        mode_pref = st.selectbox(
-            "🎛️ Mode Filter",
-            ["All Modes (Best Mix)", "🚇 Metro Preferred", "🚌 Bus Preferred", "⚡ Direct Routes Only"],
-            key="sb_mode_pref",
-        )
+    # ── Search button ────────────────────────────────────────────────────────
+    if st.button("🔍  Search Routes", type="primary", use_container_width=True, key="btn_jp_search"):
+        st.session_state["jp_searched"] = True
 
-    # Departure Timing Control (Live Real-Time vs Custom)
-    col_time_a, col_time_b = st.columns([2, 1])
-    with col_time_a:
-        dep_mode = st.radio(
-            "🕒 Departure Timing Mode",
-            [f"⚡ Live Real-Time (Current Time: {datetime.now().strftime('%I:%M %p')})", "🗓️ Choose Custom Departure Time"],
-            horizontal=True,
-            key="rb_dep_mode",
-        )
-    with col_time_b:
-        if "Custom" in dep_mode:
-            custom_time_val = st.time_input("Departure Time", value=datetime.now().time(), key="ti_custom_dep")
-            sim_time = datetime.now().replace(
-                hour=custom_time_val.hour, minute=custom_time_val.minute, second=custom_time_val.second, microsecond=0
-            )
-        else:
-            sim_time = datetime.now().replace(microsecond=0)
-
-    # Validate selections
+    # Validate
     if origin_sel.strip().lower() == dest_sel.strip().lower():
-        st.warning("⚠️ Origin and Destination are the same station. Please choose different boarding and arrival points.")
+        st.warning("⚠️ Source and destination are the same. Please choose different stops.")
         return
 
-    if not st.session_state.get("planner_searched", True):
-        st.info("👆 Select your origin and destination above, then click **Find Best Routes (Search)** to view travel options.")
+    # Auto-search on first load
+    if "jp_searched" not in st.session_state:
+        st.session_state["jp_searched"] = True
+
+    if not st.session_state.get("jp_searched", False):
         return
 
-    # Calculate journeys (guarantees at least 3 options)
+    # ─────────────────────────────────────────────────────────────────────────
+    # FIND JOURNEYS — sorted fastest-first, show top 3
+    # ─────────────────────────────────────────────────────────────────────────
+    sim_time = datetime.now().replace(microsecond=0)
+
     if hasattr(pipeline, "sim") and pipeline.sim:
         active_vehicles = pipeline.sim.get_active_vehicles()
     else:
@@ -1356,228 +1174,118 @@ def render_journey_planner_tab(pipeline):
         origin_sel,
         dest_sel,
         departure_time=sim_time,
-        max_options=8,
+        max_options=6,
         vehicles=active_vehicles,
-        user_coords=user_coords,
     )
 
-    # Filter plans by preference
-    if mode_pref == "⚡ Direct Routes Only":
-        plans = [p for p in raw_plans if p.plan_type == "direct"]
-    elif mode_pref == "🚇 Metro Preferred":
-        plans = [p for p in raw_plans if any(leg.vehicle_type == "metro" for leg in p.legs)]
-    elif mode_pref == "🚌 Bus Preferred":
-        plans = [p for p in raw_plans if any(leg.vehicle_type == "bus" for leg in p.legs)]
-    else:
-        plans = list(raw_plans)
-
-    # Fallback to all plans if mode filter yielded fewer than 3 options
-    if len(plans) < 3 and len(raw_plans) >= 3:
-        plans = list(raw_plans)
-
-    if not plans:
-        st.info(
-            f"ℹ️ No routes found matching preference '{mode_pref}'. "
-            "Try selecting 'All Modes (Best Mix)' to include multi-modal bus/metro interchange options."
-        )
+    if not raw_plans:
+        st.info("ℹ️ No routes found between these two stops. Try different locations.")
         return
 
-    # Sort plans: default strictly ranks by LESS TIME to reach the destination
-    if "Earliest Destination Arrival" in sort_by_choice:
-        plans.sort(key=lambda p: (p.arrival_time, p.total_duration_minutes))
-    elif "Fewest Transfers" in sort_by_choice:
-        plans.sort(key=lambda p: (p.transfer_count, p.total_duration_minutes))
-    elif "Lowest Fare" in sort_by_choice:
-        plans.sort(key=lambda p: (p.fare_inr, p.total_duration_minutes))
-    else:  # "⚡ Less Time to Destination (Fastest First)" - DEFAULT
-        plans.sort(key=lambda p: (p.total_duration_minutes, p.transfer_count, p.arrival_time))
+    # Sort by fastest and keep top 3
+    raw_plans.sort(key=lambda p: (p.total_duration_minutes, p.transfer_count))
+    plans = raw_plans[:3]
 
-    fastest_time = min(p.total_duration_minutes for p in plans)
-    for p in plans:
-        if p.total_duration_minutes == fastest_time:
-            p.recommended = True
-            if "Fastest" not in p.badge:
-                p.badge = f"⚡ Fastest ({p.badge})"
+    fastest = plans[0].total_duration_minutes
+
+    st.markdown("---")
+    st.markdown(f"### Top {len(plans)} Routes — {origin_sel} → {dest_sel}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # RENDER EACH OPTION AS A CLEAN CARD
+    # ─────────────────────────────────────────────────────────────────────────
+    for i, plan in enumerate(plans):
+        leg0 = plan.legs[0]
+        is_fastest = (i == 0)
+        border = "#00d2be" if is_fastest else "#2d3247"
+        bg = "linear-gradient(135deg, #0f1f2e 0%, #14202f 100%)" if is_fastest else "#161926"
+
+        # Route label
+        route_parts = []
+        for leg in plan.legs:
+            icon = "🚇" if leg.vehicle_type == "metro" else "🚌"
+            num  = leg.bus_number or leg.route_id
+            route_parts.append(f"{icon} {num}")
+        route_label = " → ".join(route_parts)
+
+        # Duration badge
+        diff = plan.total_duration_minutes - fastest
+        if diff == 0:
+            time_badge = f"<span style='background:#00d2be; color:#0e1117; font-weight:800; font-size:0.78rem; padding:3px 10px; border-radius:6px;'>⚡ FASTEST</span>"
         else:
-            p.recommended = False
+            time_badge = f"<span style='background:#2d3247; color:#ffd166; font-weight:700; font-size:0.78rem; padding:3px 10px; border-radius:6px;'>+{diff:.0f} min</span>"
 
-    # Top KPI Metrics Banner
-    best = plans[0]
-    first_leg = best.legs[0]
-    st.markdown("### 🏆 Recommended Journey (Fastest Route)")
+        # Transfer text
+        if plan.transfer_count == 0:
+            transfer_txt = "Direct"
+        else:
+            transfer_txt = f"{plan.transfer_count} transfer{'s' if plan.transfer_count > 1 else ''}"
 
-    v_icon_lead = "🚇" if first_leg.vehicle_type == "metro" else "🚌"
-    lead_b_num = first_leg.bus_number or first_leg.route_id
-    lead_b_name = first_leg.bus_name or first_leg.route_name
-    walk_info_lead = ""
-    if best.walk_to_first_stop_minutes > 0:
-        walk_info_lead = f"🚶 Walk {best.walk_to_first_stop_meters:.0f}m (~{best.walk_to_first_stop_minutes:.0f}m) from your location to {first_leg.board_stop.name} ➔ "
-
-    st.markdown(f"""
-    <div style="background:linear-gradient(135deg, #102a3a 0%, #162638 100%); border:1.5px solid #00d2be; border-radius:12px; padding:18px 22px; margin-bottom:18px;">
-        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:16px;">
-            <div style="flex:1; min-width:280px;">
-                <div style="display:flex; align-items:center; gap:8px;">
-                    <span style="background:#00d2be; color:#0e1117; font-size:0.85rem; font-weight:800; padding:3px 10px; border-radius:6px;">
-                        {v_icon_lead} {lead_b_num}
+        # ── Card header (HTML) ───────────────────────────────────────────
+        header_card = textwrap.dedent(f"""
+        <div style="background:{bg}; border:2px solid {border}; border-radius:14px; padding:18px 22px; margin-bottom:10px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                    <span style="background:{'#00d2be' if is_fastest else '#3b82f6'}; color:#0e1117; font-weight:800; padding:4px 12px; border-radius:20px; font-size:0.82rem;">
+                        Option {i+1}
                     </span>
-                    <strong style="color:#ffffff; font-size:1.15rem;">{lead_b_name}</strong>
-                    <span style="background:rgba(0,210,190,0.2); color:#00d2be; font-weight:800; font-size:0.8rem; padding:2px 8px; border-radius:6px;">
-                        ⚡ LEAST TIME ({best.total_duration_minutes:.0f} mins)
-                    </span>
+                    <span style="color:#ffffff; font-size:1.1rem; font-weight:700;">{route_label}</span>
+                    {time_badge}
                 </div>
-                <div style="margin-top:10px;">
-                    <div style="color:#8892b0; font-size:0.85rem;">
-                        🚏 Boarding at: <strong style="color:#ffffff;">{first_leg.board_stop.name}</strong>
-                        {f"<span style='color:#00d2be;'> ({walk_info_lead[:-3]})</span>" if walk_info_lead else ""}
+                <div style="display:flex; gap:20px; align-items:center;">
+                    <div style="text-align:center;">
+                        <div style="color:#57d9a3; font-size:1.4rem; font-weight:800;">{plan.total_duration_minutes:.0f}<span style="font-size:0.8rem; font-weight:600;"> min</span></div>
                     </div>
-                    <div style="color:#ffffff; font-size:1.55rem; font-weight:800; margin-top:4px;">
-                        Vehicle Arrives: <span style="color:#00d2be;">{first_leg.board_time.strftime('%I:%M %p')}</span>
-                        <span style="color:#57d9a3; font-size:1.05rem; font-weight:600; margin-left:8px;">(in ~{first_leg.wait_minutes:.0f} min)</span>
+                    <div style="text-align:center;">
+                        <div style="color:#ffd166; font-size:1.0rem; font-weight:700;">₹{plan.fare_inr}</div>
                     </div>
-                </div>
-            </div>
-            <div style="text-align:right; min-width:200px;">
-                <div style="color:#8892b0; font-size:0.85rem; font-weight:700; text-transform:uppercase;">
-                    🏁 Destination Arrival
-                </div>
-                <div style="color:#57d9a3; font-size:1.55rem; font-weight:800; margin-top:4px;">
-                    {best.arrival_time.strftime('%I:%M %p')}
-                </div>
-                <div style="color:#8892b0; font-size:0.85rem; margin-top:5px;">
-                    Total Duration: <strong style="color:#ffffff;">{best.total_duration_minutes:.0f} mins</strong>
+                    <div style="text-align:center;">
+                        <div style="color:#8892b0; font-size:0.85rem;">{transfer_txt}</div>
+                    </div>
                 </div>
             </div>
         </div>
+        """).strip()
+        st.markdown(header_card, unsafe_allow_html=True)
+
+        # ── Timeline (native Streamlit markdown — no HTML rendering issues) ─
+        for li, leg in enumerate(plan.legs):
+            v_icon = "🚇" if leg.vehicle_type == "metro" else "🚌"
+            b_num  = leg.bus_number or leg.route_id
+            b_name = leg.bus_name or leg.route_name
+
+            st.markdown(
+                f"&nbsp;&nbsp; 🕐 **{leg.board_time.strftime('%I:%M %p')}** · "
+                f"Board {v_icon} **{b_num}** {b_name} at **{leg.board_stop.name}** · "
+                f"{leg.num_stops} stops"
+            )
+
+            # Transfer marker
+            if li < len(plan.transfer_stops):
+                alight_s, next_board_s, walk_mins = plan.transfer_stops[li]
+                st.markdown(
+                    f"&nbsp;&nbsp; 🔄 **{leg.alight_time.strftime('%I:%M %p')}** · "
+                    f"Transfer at **{alight_s.name}** · ~{walk_mins:.0f} min walk"
+                )
+
+        # Final destination
+        last_leg = plan.legs[-1]
+        st.markdown(
+            f"&nbsp;&nbsp; 🏁 **{plan.arrival_time.strftime('%I:%M %p')}** · "
+            f"Arrive at **{last_leg.alight_stop.name}**"
+        )
+
+        # Compact route map (collapsed by default)
+        with st.expander(f"🗺️ View Route Map — Option {i+1}"):
+            _render_journey_map(plan, key=f"journey_map_opt_{i+1}")
+
+        st.markdown("---")
+
+    st.markdown("""
+    <div style="text-align:center; color:#4a5568; font-size:0.78rem; margin-top:10px; padding:8px;">
+        Route geometry uses linear interpolation between stops (demonstration only — not actual road/rail paths).
     </div>
     """, unsafe_allow_html=True)
-
-    # 4 Essential commuter metrics (removed clutter)
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        st.metric("⏱️ Total Travel Time", f"{best.total_duration_minutes:.0f} mins")
-    with m2:
-        st.metric("🏁 Destination Arrival (ETA)", best.arrival_time.strftime("%I:%M %p"))
-    with m3:
-        st.metric("💰 Estimated Fare", f"₹{best.fare_inr}")
-    with m4:
-        st.metric("🚏 Total Stops", f"{best.total_stops} stops" + (f" ({best.transfer_count} transfer)" if best.transfer_count > 0 else " (Direct)"))
-
-    st.markdown("---")
-    st.markdown(f"### 📋 Travel Options ({len(plans)} available • Sorted by Least Time)")
-
-    # Render each journey option (at least 3 options guaranteed)
-    for i, plan in enumerate(plans):
-        is_rec = plan.recommended
-        border_color = "#00d2be" if is_rec else "#2d3247"
-        bg_color = "linear-gradient(135deg, #13222e, #1a233a)" if is_rec else "#161926"
-        leg0 = plan.legs[0]
-        leg0_num = leg0.bus_number or leg0.route_id
-        leg0_name = leg0.bus_name or leg0.route_name
-
-        diff_mins = plan.total_duration_minutes - fastest_time
-        if diff_mins == 0:
-            duration_badge_html = f"<span style='background:#00d2be; color:#0e1117; font-weight:800; font-size:0.8rem; padding:3px 8px; border-radius:6px; margin-left:8px;'>⚡ FASTEST ({plan.total_duration_minutes:.0f}m)</span>"
-        else:
-            duration_badge_html = f"<span style='background:#2d3247; color:#ffd166; font-weight:700; font-size:0.8rem; padding:3px 8px; border-radius:6px; margin-left:8px;'>+{diff_mins:.0f}m longer</span>"
-
-        with st.container():
-            st.markdown(f"""
-            <div style="background:{bg_color}; border:2px solid {border_color}; border-radius:12px; padding:18px; margin-bottom:20px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
-                    <div>
-                        <span style="background:{'#00d2be' if is_rec else '#3b82f6'}; color:#0e1117; font-weight:700; padding:4px 10px; border-radius:12px; font-size:0.85rem; margin-right:8px;">
-                            Option #{i+1} • {plan.badge}
-                        </span>
-                        <span style="font-size:1.15rem; font-weight:700; color:#ffffff;">
-                            {plan.summary}
-                        </span>
-                        {duration_badge_html}
-                    </div>
-                    <div style="display:flex; gap:12px; align-items:center; margin-top:6px;">
-                        <span style="font-size:1.1rem; font-weight:700; color:#57d9a3;">⏱️ {plan.total_duration_minutes:.0f} min</span>
-                        <span style="font-size:0.95rem; color:#8892b0;">| ETA: <strong style="color:#ffffff;">{plan.arrival_time.strftime('%I:%M %p')}</strong></span>
-                        <span style="font-size:0.95rem; color:#ffd166;">| 💳 ₹{plan.fare_inr}</span>
-                    </div>
-                </div>
-                <div style="background:rgba(255,255,255,0.04); border-left:4px solid {'#00d2be' if is_rec else '#4a9eff'}; border-radius:6px; padding:10px 14px; margin-top:8px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-                    <div>
-                        <span style="background:{leg0.color}; color:#fff; font-weight:800; font-size:0.8rem; padding:2px 7px; border-radius:4px; margin-right:6px;">
-                            {leg0_num}
-                        </span>
-                        <strong style="color:#ffffff; font-size:0.95rem;">{leg0_name}</strong>
-                        <div style="margin-top:4px; font-size:0.85rem; color:#a0aec0;">
-                            🚏 Boarding at <strong style="color:#ffffff;">{leg0.board_stop.name}</strong>:
-                            <span style="color:{'#00d2be' if is_rec else '#4a9eff'}; font-weight:800; font-size:1.05rem; margin-left:6px;">
-                                {leg0.board_time.strftime('%I:%M %p')}
-                            </span>
-                            <span style="color:#57d9a3; margin-left:6px;">(wait ~{leg0.wait_minutes:.0f}m)</span>
-                        </div>
-                    </div>
-                    <div>
-                        <strong style="color:#e2e8f0; font-size:0.85rem;">🏁 Destination Arrival:</strong>
-                        <span style="color:#57d9a3; font-weight:800; font-size:1.15rem; margin-left:6px;">{plan.arrival_time.strftime('%I:%M %p')}</span>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Itinerary Timeline Steps (clean and uncluttered)
-            col_steps, col_map = st.columns([3, 2])
-
-            with col_steps:
-                st.markdown("**🧭 Step-by-Step Directions:**")
-                current_step_num = 1
-
-                # If starting from user's current location, show initial walk step
-                if plan.walk_to_first_stop_minutes > 0:
-                    first_st = plan.legs[0].board_stop
-                    st.markdown(f"""
-                    - **Step {current_step_num}: 🚶 Walk from Your Location to {first_st.name}**
-                      - 📍 Walk distance: **{plan.walk_to_first_stop_meters:.0f} meters** (~**{plan.walk_to_first_stop_minutes:.0f} min** walk)
-                      - 🚏 Arrive at station by: **{(plan.departure_time + timedelta(minutes=plan.walk_to_first_stop_minutes)).strftime('%I:%M %p')}**
-                    """)
-                    current_step_num += 1
-
-                for leg_idx, leg in enumerate(plan.legs):
-                    v_icon = "🚇" if leg.vehicle_type == "metro" else "🚌"
-                    leg_b_num = leg.bus_number or leg.route_id
-                    leg_b_name = leg.bus_name or leg.route_name
-
-                    st.markdown(f"""
-                    - **Step {current_step_num}: Board {v_icon} {leg_b_name} ({leg_b_num})** at **{leg.board_stop.name}**
-                      - 🕒 **Departure Station Arrival:** **{leg.board_time.strftime('%I:%M %p')}** (wait ~{leg.wait_minutes:.0f} min)
-                      - 🚏 **Ride:** {leg.num_stops} stops ➔ Alight at **{leg.alight_stop.name}** at **{leg.alight_time.strftime('%I:%M %p')}**
-                    """)
-                    current_step_num += 1
-
-                    with st.expander(f"👁️ View intermediate stops ({leg.num_stops} stops)"):
-                        st.write(" ➔ ".join([s.name for s in [leg.board_stop] + leg.intermediate_stops + [leg.alight_stop]]))
-
-                    # If there's an interchange after this leg
-                    if leg_idx < len(plan.transfer_stops):
-                        alight_s, next_board_s, walk_mins = plan.transfer_stops[leg_idx]
-                        next_leg = plan.legs[leg_idx + 1]
-                        next_num = next_leg.bus_number or next_leg.route_id
-                        next_name = next_leg.bus_name or next_leg.route_name
-                        st.markdown(f"""
-                        - **Step {current_step_num}: 🟡 Transfer at {alight_s.name}**
-                          - Platform / walking interchange: **~{walk_mins:.1f} mins**
-                          - Next vehicle arrives at **{next_leg.board_time.strftime('%I:%M %p')}**
-                        """)
-                        current_step_num += 1
-
-                # Final arrival
-                st.markdown(f"""
-                - 🏁 **Arrive at {plan.legs[-1].alight_stop.name}**
-                  - Final Arrival Time: **{plan.arrival_time.strftime('%I:%M %p')}** (Total: **{plan.total_duration_minutes:.0f} mins**)
-                """)
-
-            with col_map:
-                st.markdown(f"**🗺️ Route Map Trace (Option #{i+1}):**")
-                _render_journey_map(plan)
-
-            st.markdown("<hr style='border:0.5px solid #2d3247; margin:20px 0;'>", unsafe_allow_html=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════
